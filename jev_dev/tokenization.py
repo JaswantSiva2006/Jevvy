@@ -57,6 +57,61 @@ class DecisionTokenizer:
         truncation: bool = False,
     ) -> DecisionModelInputs: #COnverting it into tokens and getting option id pos
         text = self.format(question, options)
+        if truncation and max_length is not None:
+            question_token_id = self.tokenizer.convert_tokens_to_ids(QUESTION_TOKEN)
+            cls_token_id = self.tokenizer.cls_token_id
+            sep_token_id = self.tokenizer.sep_token_id
+            if cls_token_id is None or sep_token_id is None:
+                raise ValueError("ModernBERT tokenizer must define CLS and SEP tokens")
+            question_ids = self.tokenizer(
+                question,
+                add_special_tokens=False,
+            )["input_ids"]
+            option_ids = [
+                self.tokenizer(option, add_special_tokens=False)["input_ids"]
+                for option in options
+            ]
+            special_token_count = self.tokenizer.num_special_tokens_to_add(pair=False)
+            mandatory_token_count = 1 + len(options) + special_token_count
+            if max_length < mandatory_token_count:
+                raise ValueError(
+                    "max_length is too small to preserve all decision markers"
+                )
+
+            segments = [question_ids, *option_ids]
+            allocations = [0] * len(segments)
+            remaining_budget = max_length - mandatory_token_count
+            while remaining_budget > 0:
+                allocated_token = False
+                for index, segment in enumerate(segments):
+                    if allocations[index] < len(segment):
+                        allocations[index] += 1
+                        remaining_budget -= 1
+                        allocated_token = True
+                        if remaining_budget == 0:
+                            break
+                if not allocated_token:
+                    break
+
+            token_ids = [question_token_id]
+            token_ids.extend(question_ids[: allocations[0]])
+            for index, current_option_ids in enumerate(option_ids, start=1):
+                token_ids.append(self.option_token_id)
+                token_ids.extend(current_option_ids[: allocations[index]])
+
+            input_ids = torch.tensor(
+                [cls_token_id, *token_ids, sep_token_id],
+                dtype=torch.long,
+            )
+            attention_mask = torch.ones_like(input_ids)
+            option_positions = (
+                (input_ids == self.option_token_id)
+                .nonzero(as_tuple=False)
+                .flatten()
+                .tolist()
+            )
+            return DecisionModelInputs(input_ids, attention_mask, option_positions)
+
         encoded = self.tokenizer(
             text,
             return_tensors="pt",

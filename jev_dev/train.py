@@ -97,6 +97,9 @@ def run_epoch(
     loss_function: nn.CrossEntropyLoss,
     device: torch.device,
     optimizer: AdamW | None = None,
+    epoch: int = 0,
+    phase: str = "validation",
+    log_interval: int = 500,
 ) -> tuple[float, float]:
     training = optimizer is not None
     if training:
@@ -108,7 +111,7 @@ def run_epoch(
     total_correct = 0
     total_examples = 0
 
-    for batch in data_loader:
+    for batch_index, batch in enumerate(data_loader, start=1):
         batch = move_batch(batch, device)
         if training:
             optimizer.zero_grad(set_to_none=True)
@@ -131,6 +134,16 @@ def run_epoch(
         total_loss += loss.item() * batch_size
         total_correct += (logits.argmax(dim=-1) == batch["labels"]).sum().item()
         total_examples += batch_size
+
+        if log_interval > 0 and batch_index % log_interval == 0:
+            print(
+                f"epoch={epoch} "
+                f"phase={phase} "
+                f"batch={batch_index}/{len(data_loader)} "
+                f"loss={total_loss / total_examples:.6f} "
+                f"accuracy={total_correct / total_examples:.6f}",
+                flush=True,
+            )
 
     return total_loss / total_examples, total_correct / total_examples
 
@@ -183,6 +196,7 @@ def train(args: argparse.Namespace) -> None:
     best_validation_accuracy = float("-inf")
     checkpoint_path = Path(args.checkpoint_path)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    latest_checkpoint_path = checkpoint_path.with_name("latest_model.pt")
 
     for epoch in range(1, args.epochs + 1):
         train_loss, train_accuracy = run_epoch(
@@ -191,12 +205,30 @@ def train(args: argparse.Namespace) -> None:
             loss_function,
             device,
             optimizer,
+            epoch,
+            "train",
+            args.log_interval,
+        )
+        torch.save(
+            {
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "train_loss": train_loss,
+                "train_accuracy": train_accuracy,
+                "tokenizer_vocab_size": len(decision_tokenizer.tokenizer),
+                "arguments": vars(args),
+            },
+            latest_checkpoint_path,
         )
         validation_loss, validation_accuracy = run_epoch(
             model,
             validation_loader,
             loss_function,
             device,
+            epoch=epoch,
+            phase="validation",
+            log_interval=args.log_interval,
         )
         print(
             f"epoch={epoch} "
@@ -237,6 +269,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decision-max-length", type=int, default=8192)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--checkpoint-path", default="checkpoints/best_model.pt")
+    parser.add_argument("--log-interval", type=int, default=500)
     return parser.parse_args()
 
 
