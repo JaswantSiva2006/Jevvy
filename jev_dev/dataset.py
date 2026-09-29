@@ -2,7 +2,6 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from datasets import load_dataset
 from torch.utils.data import Dataset
 
 
@@ -10,12 +9,43 @@ DATASET_NAME = "avbiswas/bev-decision-150K"
 
 #Cleaning up dataset
 
+def load_rows(split: str):
+    try:
+        from datasets import load_dataset
+    except ImportError as error:
+        print(
+            f"datasets loader unavailable ({error}); using direct Parquet fallback",
+            flush=True,
+        )
+        return load_parquet_rows(split)
+    return load_dataset(DATASET_NAME, split=split)
+
+
+def load_parquet_rows(split: str):
+    if split not in {"train", "test"}:
+        raise ValueError("Direct Parquet fallback supports only train and test splits")
+    import pyarrow.parquet as parquet
+    from huggingface_hub import hf_hub_download
+
+    parquet_path = hf_hub_download(
+        repo_id=DATASET_NAME,
+        filename=f"data/{split}.parquet",
+        repo_type="dataset",
+    )
+    parquet_file = parquet.ParquetFile(parquet_path)
+    for batch in parquet_file.iter_batches(columns=["state", "questions_json"]):
+        yield from batch.to_pylist()
+
 class JevChoiceDataset(Dataset):
-    def __init__(self, split: str = "train") -> None:
-        rows = load_dataset(DATASET_NAME, split=split)
+    def __init__(self, split: str = "train", max_samples: int | None = None) -> None:
+        if max_samples is not None and max_samples < 1:
+            raise ValueError("max_samples must be at least 1")
+        rows = load_rows(split)
         self.samples: list[dict[str, Any]] = []
 
         for state_index, row in enumerate(rows):
+            if max_samples is not None and len(self.samples) >= max_samples:
+                break
             questions = row["questions_json"]
             if isinstance(questions, str):
                 questions = json.loads(questions)
@@ -57,6 +87,8 @@ class JevChoiceDataset(Dataset):
                         "label": option_keys.index(provided_label),
                     }
                 )
+                if max_samples is not None and len(self.samples) == max_samples:
+                    break
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -65,5 +97,8 @@ class JevChoiceDataset(Dataset):
         return self.samples[index]
 
 
-def load_jev_choice_dataset(split: str = "train") -> JevChoiceDataset:
-    return JevChoiceDataset(split=split)
+def load_jev_choice_dataset(
+    split: str = "train",
+    max_samples: int | None = None,
+) -> JevChoiceDataset:
+    return JevChoiceDataset(split=split, max_samples=max_samples)

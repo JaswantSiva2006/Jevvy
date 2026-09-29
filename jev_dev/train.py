@@ -151,7 +151,15 @@ def run_epoch(
 def train(args: argparse.Namespace) -> None:
     from .dataset import load_jev_choice_dataset
 
+    if args.device.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA was requested but PyTorch cannot see a GPU. Enable a Kaggle GPU accelerator."
+        )
     device = torch.device(args.device)
+    if device.type == "cuda":
+        print(f"device={device} gpu={torch.cuda.get_device_name(device)}", flush=True)
+    else:
+        print(f"device={device}", flush=True)
     decision_tokenizer = DecisionTokenizer()
     train_dataset = load_jev_choice_dataset(args.train_split)
     validation_dataset = load_jev_choice_dataset(args.validation_split)
@@ -178,7 +186,10 @@ def train(args: argparse.Namespace) -> None:
         pin_memory=device.type == "cuda",
     )
 
-    model = JevDecisionModel(len(decision_tokenizer.tokenizer)).to(device)
+    model = JevDecisionModel(
+        len(decision_tokenizer.tokenizer),
+        max_decision_length=args.decision_max_length,
+    ).to(device)
     embedding_weight = model.state_encoder.encoder.get_input_embeddings().weight
     other_parameters = [
         parameter

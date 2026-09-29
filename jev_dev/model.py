@@ -9,7 +9,11 @@ from .state_encoder import StateEncoder
 #Connecting the diff layers according the arch i feel is Jev lol
 
 class JevDecisionModel(nn.Module):
-    def __init__(self, tokenizer_vocab_size: int) -> None:
+    def __init__(
+        self,
+        tokenizer_vocab_size: int,
+        max_decision_length: int = 8192,
+    ) -> None:
         super().__init__()
         self.state_encoder = StateEncoder()
         embedding_layer = self.state_encoder.encoder.get_input_embeddings()
@@ -25,7 +29,10 @@ class JevDecisionModel(nn.Module):
         embedding_layer.weight.requires_grad = True
         embedding_layer.weight.register_hook(self._mask_pretrained_embedding_gradients)
 
-        self.decision_embedding = DecisionEmbedding(embedding_layer)
+        self.decision_embedding = DecisionEmbedding(
+            embedding_layer,
+            max_decision_length,
+        )
         self.decision_blocks = nn.ModuleList([DecisionBlock(), DecisionBlock()])
         self.option_scorer = OptionScorer()
 
@@ -61,4 +68,8 @@ class JevDecisionModel(nn.Module):
                 state_attention_mask,
             )
 
-        return self.option_scorer(hidden_states, option_positions)
+        return self.option_scorer(
+            hidden_states,
+            option_positions,
+            decision_attention_mask,
+        )

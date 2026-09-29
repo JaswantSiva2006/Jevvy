@@ -14,6 +14,7 @@ class OptionScorer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         option_positions: torch.Tensor | Sequence[Sequence[int]],
+        attention_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if not isinstance(option_positions, torch.Tensor):
             if len(option_positions) != hidden_states.size(0):
@@ -51,8 +52,39 @@ class OptionScorer(nn.Module):
         if (option_positions[option_mask] >= hidden_states.size(1)).any():
             raise ValueError("option position exceeds the sequence length")
 
-        gather_indices = option_positions.clamp_min(0).unsqueeze(-1).expand(-1, -1, 768)
-        option_hidden_states = hidden_states.gather(1, gather_indices)
+        if attention_mask is None:
+            sequence_ends = torch.full(
+                (hidden_states.size(0),),
+                hidden_states.size(1),
+                dtype=torch.long,
+                device=hidden_states.device,
+            )
+        else:
+            if attention_mask.shape != hidden_states.shape[:2]:
+                raise ValueError("attention_mask shape must match hidden states")
+            sequence_ends = attention_mask.to(hidden_states.device).sum(dim=1) - 1
+
+        option_hidden_states = hidden_states.new_zeros(
+            hidden_states.size(0),
+            option_positions.size(1),
+            hidden_states.size(2),
+        )
+        for batch_index in range(hidden_states.size(0)):
+            valid_positions = option_positions[batch_index][option_mask[batch_index]]
+            for option_index, marker_position in enumerate(valid_positions):
+                span_start = marker_position.item() + 1
+                if option_index + 1 < valid_positions.numel():
+                    span_end = valid_positions[option_index + 1].item()
+                else:
+                    span_end = sequence_ends[batch_index].item()
+                if span_start >= span_end:
+                    raise ValueError(
+                        f"option {option_index} in batch item {batch_index} has no text tokens"
+                    )
+                option_hidden_states[batch_index, option_index] = hidden_states[
+                    batch_index, span_start:span_end
+                ].mean(dim=0)
+
         logits = self.scorer(option_hidden_states).squeeze(-1)
         logits = logits.masked_fill(~option_mask, float("-inf"))
         probabilities = torch.softmax(logits, dim=-1)
